@@ -26,6 +26,8 @@ namespace
 		PfnSetLoggingCallback setLoggingCallback = nullptr;
 		PfnSettingsInstance settingsInstance = nullptr;
 
+		HMODULE module = nullptr;
+
 		// XefgSettings singleton
 		uint8_t* settings = nullptr;
 		const SettingsLayout* layout = nullptr;
@@ -305,6 +307,7 @@ namespace
 bool XeFG::Resolve(HMODULE module)
 {
 	api = {};
+	api.module = module;
 
 	const Image image = ParseImage(module);
 	const KnownBuild* known = nullptr;
@@ -410,3 +413,5 @@ xefgd_result_t XeFG::Execute(xefgd_handle_t context, ID3D12GraphicsCommandList* 
 }
 
 xefgd_result_t XeFG::Destroy(xefgd_handle_t context) { return api.destroy(context); }
+
+HMODULE XeFG::Module() { return api.module; }

@@ -139,6 +139,9 @@ namespace XeFG
 	// Picks a compatible libxess_fg.dll, loaded ones first, then the one next to this dll. Only searches once
 	bool Load();
 
+	// The module Load picked, null until one is resolved
+	HMODULE Module();
+
 	// Locates the hidden API in module, false when it isn't a build we can drive. Replaces the previous module's API
 	bool Resolve(HMODULE module);
 
