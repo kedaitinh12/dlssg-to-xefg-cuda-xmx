@@ -23,11 +23,10 @@ itself.
 3. Extract the NvngxXeFGXMX folder from the zip into OptiScaler\custom. The folder structure should be: gamefolderwithoptiscaler'sdll\OptiScaler\custom\NvngxXeFGXMX
 4. Launch the game and open OptiScaler with insert. 
 5. The recommended FG input is DLSSG via NVNGX, as it lets you use NvngxXeFGXMX as an output directly.
- 
-If DLSSG via NVNGX is not available or doesn't work, you can use any other input by setting the FG Output to DLSSG, and the FG replacement to NvngxXeFGXMX. Then press Save Settings in the bottom right to save
-6. Make sure "Current DLSSG state" says "ON" with the fake frame count you selected. Then check \OptiScaler\custom\NvngxXeFGXMX\dlssg\dlssg_to_xefg_intel_is_better.log
+   If DLSSG via NVNGX is not available or doesn't work, you can use any other input by setting the FG Output to DLSSG, and the FG replacement to NvngxXeFGXMX. Then press Save Settings in the bottom right to save
 
-It should say "Ported XMX MFG model installed, one optical flow field per generated batch" and "Creating XeFG context: 2560x1440, format: 28, flags: 1, ui mode: 4, model: 16"
+7. Make sure "Current DLSSG state" says "ON" with the fake frame count you selected. Then check \OptiScaler\custom\NvngxXeFGXMX\dlssg\dlssg_to_xefg_intel_is_better.log
+   It should say "Ported XMX MFG model installed, one optical flow field per generated batch" and "Creating XeFG context: 2560x1440, format: 28, flags: 1, ui mode: 4, model: 16"
 
 Model 16 means it's running the XMX path.
 
