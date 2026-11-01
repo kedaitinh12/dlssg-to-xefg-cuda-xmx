@@ -383,6 +383,9 @@ void FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 			data.hudlessColor = Subrect(params, "HUDLess", hudless);
 	}
 
+	// The outputs are full size, XeFG writes its region at the back buffer's offset to keep letterboxing aligned
+	std::ranges::fill(context->outputBases, data.backBuffer.base);
+
 	GetViewMatrix(params, data.viewMatrix);
 	GetProjectionMatrix(params, depthInverted, (float)settings.width / (float)settings.height,
 		data.projectionMatrix);
