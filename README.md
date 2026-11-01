@@ -1,4 +1,4 @@
-# dlssg-to-xefg
+# dlssg-to-xefg-xmx
 
 Replaces DLSS Frame Generation with Intel XeSS Frame Generation (XeFG), up to 6x. Inspired by Nukem9's
 [dlssg-to-fsr3](https://github.com/Nukem9/dlssg-to-fsr3).
@@ -18,14 +18,14 @@ itself.
 
 ## Installation
 
-1. Download the NvngxXeFGXMX.7z from the [latest release](https://github.com/realdody/dlssg-to-xefg/releases/latest).
+1. Download dlssg-to-xefg-#.zip from the [latest release](https://github.com/realdody/dlssg-to-xefg/releases/latest).
 2. Make sure you're using OptiScaler v10 https://github.com/optiscaler/OptiScaler-nightly/releases/latest.
-3. Extract the NvngxXeFGXMX folder from the zip into OptiScaler\custom. The folder structure should be: gamefolderwithoptiscaler'sdll\OptiScaler\custom\NvngxXeFGXMX
+3. Extract the XeMFG XMX folder from the zip into OptiScaler\custom. The folder structure should be: gamefolderwithoptiscaler'sdll\OptiScaler\custom\XeMFG XMX
 4. Launch the game and open OptiScaler with insert. 
-5. The recommended FG input is DLSSG via NVNGX, as it lets you use NvngxXeFGXMX as an output directly.
-   If DLSSG via NVNGX is not available or doesn't work, you can use any other input by setting the FG Output to DLSSG, and the FG replacement to NvngxXeFGXMX. Then press Save Settings in the bottom right to save
+5. The recommended FG input is DLSSG via NVNGX, as it lets you use XeMFG XMX as an output directly.
+   If DLSSG via NVNGX is not available or doesn't work, you can use any other input by setting the FG Output to DLSSG, and the FG replacement to XeMFG XMX. Then press Save Settings in the bottom right to save
 
-7. Make sure "Current DLSSG state" says "ON" with the fake frame count you selected. Then check \OptiScaler\custom\NvngxXeFGXMX\dlssg\dlssg_to_xefg_intel_is_better.log
+7. Make sure "Current DLSSG state" says "ON" with the fake frame count you selected. Then check \OptiScaler\custom\XeMFG XMX\dlssg\dlssg_to_xefg_intel_is_better.log
    It should say "Ported XMX MFG model installed, one optical flow field per generated batch" and "Creating XeFG context: 2560x1440, format: 28, flags: 1, ui mode: 4, model: 16"
 
 Model 16 means it's running the XMX path.
