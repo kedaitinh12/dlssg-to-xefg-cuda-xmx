@@ -1,4 +1,4 @@
-# Builds the dll on every push to master and publishes it, with the license, as a release
+# Builds the dll on every push to master and publishes it, together with the MFG program data, as a release
 name: Release
 
 on:
@@ -23,8 +23,27 @@ jobs:
       - name: Package
         shell: pwsh
         run: |
-          $zip = "dlssg-to-xefg-${{ github.run_number }}.zip"
-          Compress-Archive -Path bin\Release\dlssg_to_xefg_intel_is_better.dll, LICENSE -DestinationPath $zip
+          $zip = Join-Path $PWD "dlssg-to-xefg-${{ github.run_number }}.zip"
+          $stage = Join-Path $PWD "staging"
+          $dlssg = Join-Path $stage "XeMFG XMX\dlssg"
+          $programs = Join-Path $dlssg "xefg_mfg_programs"
+          New-Item -ItemType Directory -Path $programs -Force | Out-Null
+
+          Copy-Item bin\Release\dlssg_to_xefg_intel_is_better.dll $dlssg
+          Copy-Item src\MfgPort\xefg_mfg_programs\* $programs -Recurse
+
+          Add-Type -AssemblyName System.IO.Compression
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::Open($zip, [System.IO.Compression.ZipArchiveMode]::Create)
+          try {
+            Get-ChildItem -Path (Join-Path $stage "XeMFG XMX") -Recurse -File | ForEach-Object {
+              # Use forward slashes so the zip extracts correctly on all platforms.
+              $entryName = $_.FullName.Substring($stage.Length + 1).Replace("\", "/")
+              [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $_.FullName, $entryName) | Out-Null
+            }
+          } finally {
+            $archive.Dispose()
+          }
           "ZIP=$zip" >> $env:GITHUB_ENV
 
       - name: Release
