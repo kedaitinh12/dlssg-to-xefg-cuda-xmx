@@ -50,7 +50,7 @@ static void XeFGLogCallback(const char* message, xefgd_logging_level_t level, vo
 }
 
 static ComPtr<ID3D12Resource> CreateTexture(ID3D12Device* device, D3D12_RESOURCE_DESC desc,
-	D3D12_RESOURCE_STATES state, const wchar_t* name)
+	D3D12_RESOURCE_STATES state, const wchar_t* name, const char* purpose)
 {
 	ComPtr<ID3D12Resource> texture;
 	D3D12_HEAP_PROPERTIES heap{ D3D12_HEAP_TYPE_DEFAULT };
@@ -59,7 +59,11 @@ static ComPtr<ID3D12Resource> CreateTexture(ID3D12Device* device, D3D12_RESOURCE
 		IID_PPV_ARGS(&texture));
 		FAILED(hr))
 	{
-		Log::Error("CreateCommittedResource error: {:X}", (uint32_t)hr);
+		// The desc is built from the game's resource, so it has to be in the message to identify the culprit
+		Log::Error("CreateCommittedResource error: {:X} for {}, {}x{}x{}, mips {}, format {}, flags {:X}, layout {}, samples {}/{}",
+			(uint32_t)hr, purpose, desc.Width, desc.Height, desc.DepthOrArraySize, desc.MipLevels,
+			(uint32_t)desc.Format, (uint32_t)desc.Flags, (uint32_t)desc.Layout, desc.SampleDesc.Count,
+			desc.SampleDesc.Quality);
 		return nullptr;
 	}
 
@@ -86,7 +90,7 @@ static void MakeReadableDepth(D3D12_RESOURCE_DESC& desc)
 
 // Copies source into copy, (re)created when the source changes, the copy is left in XeFGInputState
 static bool Capture(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12Resource* source,
-	D3D12_RESOURCE_STATES sourceState, ComPtr<ID3D12Resource>& copy, bool isDepth = false)
+	D3D12_RESOURCE_STATES sourceState, ComPtr<ID3D12Resource>& copy, const char* purpose, bool isDepth = false)
 {
 	if (!source)
 	{
@@ -95,7 +99,13 @@ static bool Capture(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID
 	}
 
 	auto desc = source->GetDesc();
-	desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+	// The copy only ever rests in XeFGInputState and gets read through an SRV, so none of the source's flags are
+	// needed. Inheriting them can make CreateCommittedResource reject the desc: ALLOW_CROSS_ADAPTER needs a cross
+	// adapter heap, ALLOW_SIMULTANEOUS_ACCESS can't be combined with a depth resource, and ALLOW_UNORDERED_ACCESS
+	// can't be used with MSAA. A non committed layout (row major, 64KB swizzle) can be rejected the same way.
+	desc.Flags &= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
 	if (isDepth)
 		MakeReadableDepth(desc);
@@ -105,7 +115,10 @@ static bool Capture(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID
 		auto copyDesc = copy->GetDesc();
 
 		// The old one can still be in use by the GPU
-		if (copyDesc.Width != desc.Width || copyDesc.Height != desc.Height || copyDesc.Format != desc.Format ||
+		if (copyDesc.Dimension != desc.Dimension || copyDesc.Width != desc.Width || copyDesc.Height != desc.Height ||
+			copyDesc.DepthOrArraySize != desc.DepthOrArraySize || copyDesc.MipLevels != desc.MipLevels ||
+			copyDesc.Format != desc.Format || copyDesc.SampleDesc.Count != desc.SampleDesc.Count ||
+			copyDesc.SampleDesc.Quality != desc.SampleDesc.Quality || copyDesc.Layout != desc.Layout ||
 			copyDesc.Flags != desc.Flags)
 		{
 			DeferredDestroy::Add(std::make_shared<ComPtr<ID3D12Resource>>(std::move(copy)));
@@ -113,7 +126,7 @@ static bool Capture(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID
 	}
 
 	if (!copy)
-		copy = CreateTexture(device, desc, XeFGInputState, L"dlssg-to-xefg input copy");
+		copy = CreateTexture(device, desc, XeFGInputState, L"dlssg-to-xefg input copy", purpose);
 
 	if (!copy)
 		return false;
@@ -365,10 +378,10 @@ void FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 	auto& frame = context->frames[context->current];
 	auto& previous = context->frames[context->current ^ 1];
 
-	bool captured = Capture(device.Get(), cmdList, backbuffer, BackbufferState, frame.backbuffer);
-	captured &= Capture(device.Get(), cmdList, depth, InputState, frame.depth, true);
-	captured &= Capture(device.Get(), cmdList, mvecs, InputState, frame.mvecs);
-	Capture(device.Get(), cmdList, hudless, InputState, frame.hudless);
+	bool captured = Capture(device.Get(), cmdList, backbuffer, BackbufferState, frame.backbuffer, "Backbuffer");
+	captured &= Capture(device.Get(), cmdList, depth, InputState, frame.depth, "Depth copy", true);
+	captured &= Capture(device.Get(), cmdList, mvecs, InputState, frame.mvecs, "MVecs copy");
+	Capture(device.Get(), cmdList, hudless, InputState, frame.hudless, "HUDLess copy");
 
 	auto& data = frame.data;
 	data = {};
@@ -418,11 +431,14 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
 
 	outputDesc.Format = settings.format;
 	outputDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+	// The game's output can live in a layout a committed UAV texture can't use
+	outputDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
 	for (uint32_t i = 0; i < frameCount; i++)
 	{
 		if (!context->outputs[i])
-			context->outputs[i] = CreateTexture(device.Get(), outputDesc, OutputState, L"dlssg-to-xefg output");
+			context->outputs[i] = CreateTexture(device.Get(), outputDesc, OutputState, L"dlssg-to-xefg output",
+				"XeFG output");
 
 		if (!context->outputs[i])
 			return InterpolateResult::Failed;
