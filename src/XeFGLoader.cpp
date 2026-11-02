@@ -44,6 +44,23 @@ namespace
 		return false;
 	}
 
+	// OptiScaler keeps libxess_fg.dll in its own folder, while this dll sits in custom\<name>\dlssg below it. Look
+	// next to this dll first, then up to three folders up to cover the OptiScaler install layout
+	std::vector<std::filesystem::path> CandidatePaths()
+	{
+		auto here = ThisModulePath();
+		std::vector<std::filesystem::path> paths{ here.replace_filename(XeFGDllName) };
+
+		auto directory = here.parent_path();
+		for (int i = 0; i < 3 && directory.has_parent_path(); i++)
+		{
+			directory = directory.parent_path();
+			paths.push_back(directory / XeFGDllName);
+		}
+
+		return paths;
+	}
+
 	bool Search()
 	{
 		for (HMODULE module : LoadedXeFGModules())
@@ -58,19 +75,26 @@ namespace
 			return true;
 		}
 
-		auto path = ThisModulePath().replace_filename(XeFGDllName);
-		HMODULE module = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
-
-		if (!module)
+		for (const auto& path : CandidatePaths())
 		{
-			Log::Error("No compatible libxess_fg.dll is loaded and {} can't be loaded", path.string());
-			return false;
+			if (!std::filesystem::exists(path))
+				continue;
+
+			HMODULE module = LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+
+			if (!module)
+			{
+				Log::Warn("{} can't be loaded", path.string());
+				continue;
+			}
+
+			if (TryModule(module))
+				return true;
+
+			FreeLibrary(module);
 		}
 
-		if (TryModule(module))
-			return true;
-
-		FreeLibrary(module);
+		Log::Error("No compatible libxess_fg.dll is loaded and none was found next to this dll or in its parent folders");
 		return false;
 	}
 } // namespace
