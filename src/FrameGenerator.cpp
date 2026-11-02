@@ -20,6 +20,48 @@ constexpr auto OutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 // What XeFG wants for its inputs, our copies always rest in this state
 constexpr auto XeFGInputState = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
+// The raw DXGI_FORMAT number says nothing in a log, the games' formats are worth naming
+static const char* FormatName(DXGI_FORMAT format)
+{
+	switch (format)
+	{
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+		return "R8G8B8A8_UNORM";
+	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+		return "R8G8B8A8_UNORM_SRGB";
+	case DXGI_FORMAT_B8G8R8A8_UNORM:
+		return "B8G8R8A8_UNORM";
+	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+		return "B8G8R8A8_UNORM_SRGB";
+	case DXGI_FORMAT_R10G10B10A2_UNORM:
+		return "R10G10B10A2_UNORM";
+	case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		return "R16G16B16A16_FLOAT";
+	default:
+		return "unknown format";
+	}
+}
+
+// XeFG's HDR support is R10G10B10A2_UNORM in HDR10 / BT.2100 only, scRGB (FP16) is rejected. A resource doesn't
+// carry its color space, so the format is the only hint there is: FP16 on a swap chain means scRGB HDR in practice
+static const char* HdrDescription(DXGI_FORMAT format)
+{
+	switch (format)
+	{
+	case DXGI_FORMAT_R10G10B10A2_UNORM:
+		return "HDR10 / BT.2100";
+	case DXGI_FORMAT_R16G16B16A16_FLOAT:
+		return "scRGB, not supported by XeFG";
+	case DXGI_FORMAT_R8G8B8A8_UNORM:
+	case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+	case DXGI_FORMAT_B8G8R8A8_UNORM:
+	case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+		return "SDR";
+	default:
+		return "unknown color space";
+	}
+}
+
 // XeFG stock network. libxess_fg.dll does not ship its multi frame variant (16), which Init would switch to for
 // more than one generated frame, so it gets forced. The XMX port publishes 16, and then Init loads the cheaper MFG
 // model: one optical flow field for the whole batch instead of one per generated frame
@@ -350,6 +392,9 @@ void FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 
 	const bool depthInverted = params.GetOr<uint32_t>("DLSSG.DepthInverted", 0) != 0;
 
+	const auto backbufferFormat = TypedFormat(backbuffer->GetDesc().Format);
+	const auto hudlessFormat = hudless ? TypedFormat(hudless->GetDesc().Format) : DXGI_FORMAT_UNKNOWN;
+
 	Settings wanted;
 	auto outputDesc = output->GetDesc();
 	wanted.width = (uint32_t)outputDesc.Width;
@@ -361,6 +406,26 @@ void FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const 
 
 	if (wanted != settings)
 	{
+		// Logged whenever the formats change, they decide whether XeFG's HDR path can work at all: HDR10 is
+		// R10G10B10A2_UNORM, scRGB is FP16 and unsupported, and the HDR inputs must all share one format
+		const auto describe = [](const char* name, DXGI_FORMAT format)
+			{
+				if (format == DXGI_FORMAT_UNKNOWN)
+					return std::format("{}: none", name);
+
+				return std::format("{}: {} ({}, {})", name, FormatName(format), (uint32_t)format, HdrDescription(format));
+			};
+
+		Log::Info("HDR formats, {}; {}; {}", describe("back buffer", backbufferFormat), describe("HUD-less", hudlessFormat),
+			describe("output", wanted.format));
+
+		if (backbufferFormat == DXGI_FORMAT_R16G16B16A16_FLOAT)
+			Log::Warn("FP16 (R16G16B16A16_FLOAT) is scRGB HDR, which XeFG doesn't support. Use HDR10 "
+				"(R10G10B10A2_UNORM) or turn HDR off, otherwise frame generation can fail or show wrong colors");
+		else if (hudlessFormat != DXGI_FORMAT_UNKNOWN && hudlessFormat != backbufferFormat)
+			Log::Warn("HUD-less color is {}, but the back buffer is {}, XeFG's HDR path needs every input in the same "
+				"HDR10 format", FormatName(hudlessFormat), FormatName(backbufferFormat));
+
 		settings = wanted;
 		createFailed = false;
 
