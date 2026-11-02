@@ -1,9 +1,8 @@
-# Builds the dll on every push to master and publishes it, together with the MFG program data, as a release
+# Builds the dll when triggered manually and publishes it, together with the MFG program data, as a release
 name: Release
 
 on:
-  push:
-    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: write
