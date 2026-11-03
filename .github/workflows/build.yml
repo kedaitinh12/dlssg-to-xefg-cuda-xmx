@@ -1,0 +1,35 @@
+# Builds the dll on every push and keeps the result as a workflow artifact, packed the way the release zip is. Nothing
+# is released from here: the Release workflow is started by hand (Actions > Release > Run workflow).
+name: Build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild dlssg-to-xefg.sln -p:Configuration=Release -p:Platform=x64 -m
+
+      - name: Stage
+        shell: pwsh
+        run: |
+          $dlssg = Join-Path $PWD "staging\XeMFG XMX\dlssg"
+          $programs = Join-Path $dlssg "xefg_mfg_programs"
+          New-Item -ItemType Directory -Path $programs -Force | Out-Null
+
+          Copy-Item bin\Release\dlssg_to_xefg_intel_is_better.dll $dlssg
+          Copy-Item src\MfgPort\xefg_mfg_programs\* $programs -Recurse
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XeMFG-XMX-${{ github.run_number }}
+          path: staging
+          if-no-files-found: error
