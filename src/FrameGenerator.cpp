@@ -1,4 +1,5 @@
 #include "FrameGenerator.h"
+#include "CudaKernels.h"
 #include "Log.h"
 #include "MfgKernels.h"
 #include "Util.h"
@@ -73,6 +74,9 @@ FrameGenerator::Context::~Context()
 		if (auto result = XeFG::Destroy(handle); result != XEFGD_RESULT_SUCCESS)
 			Log::Warn("XeFG Destroy error: {}", result);
 	}
+
+	// Pairs with ContextCreated in CreateContext, also for a context that never got a handle
+	CudaKernels::ContextDestroyed();
 }
 
 static void XeFGLogCallback(const char* message, xefgd_logging_level_t level, void*)
@@ -342,9 +346,15 @@ static void GetProjectionMatrix(const NGXParameter& params, bool depthInverted, 
 bool FrameGenerator::CreateContext()
 {
 	auto newContext = std::make_shared<Context>();
+	CudaKernels::ContextCreated();
 
 	// Publishing the ported model patches libxess_fg.dll process wide, so it runs before the first context
 	const bool mfgModel = MfgKernels::Install(XeFG::Module());
+
+	// MFG-Unlocker's tensor core route runs the ported model's int8 conv layers as CUDA kernels. XeFG creates its
+	// pipeline states in CreateContext and Init below, which is where the route recognizes the layers, so it goes first
+	if (mfgModel)
+		CudaKernels::Install(device.Get(), XeFG::Module());
 
 	// Process wide, they also affect other XeFG contexts. Must happen before the context picks its model
 	XeFG::SetMaxInterpolatedFrames(MaxFrames);
@@ -533,10 +543,16 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
 	params.firstFrameIndex = frameIndex - 1;
 	params.frameCount = 1;
 
+	// XeFG records its Dispatches into the game's own list, hooked here so the layers can become CUDA launches
+	CudaKernels::Adopt(cmdList);
+
 	auto result = XeFG::Execute(context->handle, cmdList, params);
 
 	if (result == XEFGD_RESULT_SUCCESS)
+	{
+		CudaKernels::Executed();
 		return InterpolateResult::Interpolated;
+	}
 
 	if (result > 0)
 	{
