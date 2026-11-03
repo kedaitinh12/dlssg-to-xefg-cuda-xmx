@@ -30,6 +30,38 @@ itself.
 
 Model 16 means it's running the XMX path.
 
+## Tensor cores (NVIDIA RTX 20, 30, 40 and 50, experimental)
+
+With the ported model published, its int8 conv layers can run as CUDA kernels on the tensor cores instead of as D3D12
+compute, launched through NVAPI in the command list XeFG records into (no CUDA context, no second queue). It is
+MFG-Unlocker's route, see [NOTICE.md](NOTICE.md). It needs `xefg_mfg_programs\cuda\xefg_cuda_layers.fatbin` next to the
+dll (the release zip has it) and an NVIDIA GPU of compute capability 7.5 (RTX), 8.6, 8.9 or 12.0. Every other GPU, every
+layer the route doesn't recognize and any failure keep running the DXIL programs.
+
+XeFG records into the game's own command list, so the route hooks that list's table. By default it only does that when
+the list sits on a class table the D3D12 runtime shares between its lists (the system runtime, which most games use).
+Games on an Agility SDK fast path keep a table inside each list object; MFG-Unlocker never writes those of a game's
+lists, because modules that validate them refuse the hooks. `XeFGTensorCoresOwnTables = on` allows it anyway
+(`cuda_list_refused ... game_list_own_table` in the log is the default declining them).
+
+Settings go in `dlssg_to_xefg_intel_is_better.ini` next to the dll, or in the environment variables named below:
+
+```ini
+[XeFG]
+; off turns the route off (DLSSG_TO_XEFG_TENSOR_CORES=off)
+XeFGTensorCores = off
+; on also hooks game command lists that keep a table of their own (DLSSG_TO_XEFG_TENSOR_CORES_OWN_TABLES=on)
+XeFGTensorCoresOwnTables = on
+```
+
+To try a kernel set of your own, point the environment variable `DLSSG_TO_XEFG_TENSOR_CORES_FATBIN` at the fatbin. It is
+not held to the pinned SHA-256 then (the log says so), so it has to keep the kernels' names, 128 thread blocks and
+parameters; `tests/xess_cuda` in MFG-Unlocker (byte-identical against Intel's programs) is what shows it is safe.
+
+`dlssg_to_xefg_intel_is_better.log` shows what happened. `MfgPort cuda_route {"state":"active"...}` means the kernels
+were created, `MfgPort cuda_layer` lines name the layers recognized, and `Tensor cores are running` appears once kernels
+have launched. `cuda_route ... "state":"unavailable"` or `cuda_list_refused` lines say why the layers stayed on D3D12.
+
 ## Which libxess_fg.dll is used
 
 1. Every `libxess_fg.dll` already loaded in the process, the first compatible one wins
@@ -49,8 +81,9 @@ Visual Studio 2026 (v145 toolset), open `dlssg-to-xefg.sln` and build Release x6
 
 ## Credits
 
-The port in `src/MfgPort/` and `src/MfgKernels.cpp` is from [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker),
-MIT licensed, Copyright (c) 2026 Michael Robles. See [NOTICE.md](NOTICE.md).
+The port in `src/MfgPort/`, `src/MfgKernels.cpp`, `src/CudaRoute/` and the kernels in
+`src/MfgPort/xefg_mfg_programs/cuda` is from [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker), MIT licensed,
+Copyright (c) 2026 Michael Robles. See [NOTICE.md](NOTICE.md).
 
 ## License
 

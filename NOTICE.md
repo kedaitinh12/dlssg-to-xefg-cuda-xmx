@@ -6,6 +6,13 @@
 [MFG-Unlocker](https://github.com/dashdogy/MFG-Unlocker), specifically `source/native/xess/runtime_layout.h`,
 `runtime_layout.generated.h`, `runtime_payload.*` and `port/model_port.h`, `port/shader_port.h`.
 
+`src/CudaRoute/` is the tensor core route, ported from `source/native/xess/cuda/cuda_route.{h,cpp}` and
+`xefg_cuda_params.h`, with the NVAPI owner checks and the device unwrap taken from `source/native/adapter_discovery.h`,
+`overlay_native.h` and `overlay_slots.h`. `CudaRoute.cpp` differs from MFG-Unlocker's file by its includes, one renamed
+call and the two functions at its end (`Active`, `AdoptRecordingList`). `src/MfgPort/xefg_mfg_programs/cuda/xefg_cuda_layers.fatbin`
+is MFG-Unlocker's build of `source/native/xess/cuda/xefg_cuda_layers.cu` (the SHA-256 pinned in its
+`generate_cuda_layers.py`), unmodified. `src/CudaKernels.cpp` is this project's glue for it.
+
 MIT License, Copyright (c) 2026 Michael Robles. The full text is in `MFG-Unlocker/LICENSE` in the source tree this port
 was taken from, and is reproduced here:
 

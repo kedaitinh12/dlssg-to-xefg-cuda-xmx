@@ -47,12 +47,14 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d12.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableCOMDATFolding Condition="'$(Configuration)'=='Release'">true</EnableCOMDATFolding>
       <OptimizeReferences Condition="'$(Configuration)'=='Release'">true</OptimizeReferences>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\CudaKernels.cpp" />
+    <ClCompile Include="src\CudaRoute\CudaRoute.cpp" />
     <ClCompile Include="src\Exports.cpp" />
     <ClCompile Include="src\FrameGenerator.cpp" />
     <ClCompile Include="src\Log.cpp" />
@@ -62,6 +64,10 @@
     <ClCompile Include="src\XeFGLoader.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="src\CudaKernels.h" />
+    <ClInclude Include="src\CudaRoute\CudaParams.h" />
+    <ClInclude Include="src\CudaRoute\CudaRoute.h" />
+    <ClInclude Include="src\CudaRoute\NvapiOwner.h" />
     <ClInclude Include="src\FrameGenerator.h" />
     <ClInclude Include="src\Log.h" />
     <ClInclude Include="src\MfgKernels.h" />
