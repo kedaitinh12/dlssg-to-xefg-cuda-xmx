@@ -1,5 +1,8 @@
-# Builds the dll on every push and keeps the result as a workflow artifact, packed the way the release zip is. Nothing
-# is released from here: the Release workflow is started by hand (Actions > Release > Run workflow).
+# Builds the dll on every push and keeps the result as a workflow artifact, packed the way the release zip is. It also
+# compiles the kernel variants in src/CudaRoute/kernels with nvcc and packs them as
+# xefg_mfg_programs\cuda\xefg_cuda_layers.<variant>.fatbin next to the pinned build. The dll runs the opt variant by itself
+# when its file is there (XeFGTensorCoresKernels = stock goes back to the pinned build). Nothing is released from here: the
+# Release workflow is started by hand.
 name: Build
 
 on:
@@ -7,7 +10,65 @@ on:
   workflow_dispatch:
 
 jobs:
+  fatbin:
+    name: fatbin ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    # nvcc 12.9 knows sm_120. MFG-Unlocker's pinned build is nvcc 13.2.51, so these bytes differ from its fatbin even for base
+    container: nvidia/cuda:12.9.1-devel-ubuntu24.04
+    # A variant that fails to build must not stop the dll from being built and packed
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: base
+            flags: -DXEFG_CUDA_NO_SWIZZLE -DXEFG_CUDA_NO_LDMATRIX
+          - variant: swizzle
+            flags: -DXEFG_CUDA_NO_LDMATRIX
+          - variant: ldmatrix
+            flags: -DXEFG_CUDA_NO_SWIZZLE
+          - variant: opt
+            flags: ""
+          - variant: opt-min4
+            flags: -DXEFG_CUDA_DCD8BECF_MINBLOCKS=4
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python
+        run: |
+          rm -f /etc/apt/sources.list.d/cuda* /etc/apt/sources.list.d/nvidia*
+          apt-get update -qq
+          apt-get install -y -qq python3 g++
+
+      - name: Compile
+        run: |
+          nvcc --version
+          nvcc -fatbin -O3 \
+            -gencode arch=compute_75,code=sm_75 -gencode arch=compute_86,code=sm_86 \
+            -gencode arch=compute_89,code=sm_89 -gencode arch=compute_120,code=sm_120 \
+            -Xptxas -v ${{ matrix.flags }} \
+            -o xefg_cuda_layers.${{ matrix.variant }}.fatbin src/CudaRoute/kernels/xefg_cuda_layers.cu \
+            2> ptxas.${{ matrix.variant }}.txt || { cat ptxas.${{ matrix.variant }}.txt; exit 1; }
+          grep -E "Compiling entry function|spill|Used [0-9]+ registers" ptxas.${{ matrix.variant }}.txt || true
+
+      - name: Check
+        run: |
+          python3 tools/fatbin_info.py --check xefg_cuda_layers.${{ matrix.variant }}.fatbin
+          python3 tools/fatbin_info.py --markdown xefg_cuda_layers.${{ matrix.variant }}.fatbin >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; grep -E "Compiling entry function|spill" ptxas.${{ matrix.variant }}.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fatbin-${{ matrix.variant }}
+          path: |
+            xefg_cuda_layers.${{ matrix.variant }}.fatbin
+            ptxas.${{ matrix.variant }}.txt
+
   build:
+    needs: fatbin
+    # Runs whether or not the variants built
+    if: ${{ !cancelled() }}
     runs-on: windows-latest
 
     steps:
@@ -18,6 +79,14 @@ jobs:
       - name: Build
         run: msbuild dlssg-to-xefg.sln -p:Configuration=Release -p:Platform=x64 -m
 
+      - name: Kernel variants
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: fatbin-*
+          merge-multiple: true
+          path: fatbins
+
       - name: Stage
         shell: pwsh
         run: |
@@ -27,6 +96,11 @@ jobs:
 
           Copy-Item bin\Release\dlssg_to_xefg_intel_is_better.dll $dlssg
           Copy-Item src\MfgPort\xefg_mfg_programs\* $programs -Recurse
+
+          # The variants the fatbin jobs built, next to the pinned build
+          $cuda = Join-Path $programs "cuda"
+          New-Item -ItemType Directory -Path $cuda -Force | Out-Null
+          if (Test-Path fatbins) { Get-ChildItem fatbins -Filter *.fatbin | Copy-Item -Destination $cuda }
 
       - uses: actions/upload-artifact@v4
         with:
