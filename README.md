@@ -52,15 +52,26 @@ Settings go in `dlssg_to_xefg_intel_is_better.ini` next to the dll, or in the en
 XeFGTensorCores = off
 ; on also hooks game command lists that keep a table of their own (DLSSG_TO_XEFG_TENSOR_CORES_OWN_TABLES=on)
 XeFGTensorCoresOwnTables = on
+; stock = MFG-Unlocker's pinned build, auto (the default) = the opt variant when its file is there, or the name of another
+; variant the workflow built (DLSSG_TO_XEFG_TENSOR_CORES_KERNELS)
+XeFGTensorCoresKernels = stock
 ```
 
-To try a kernel set of your own, point the environment variable `DLSSG_TO_XEFG_TENSOR_CORES_FATBIN` at the fatbin. It is
-not held to the pinned SHA-256 then (the log says so), so it has to keep the kernels' names, 128 thread blocks and
-parameters; `tests/xess_cuda` in MFG-Unlocker (byte-identical against Intel's programs) is what shows it is safe.
+`.github/workflows/build.yml` compiles variants of MFG-Unlocker's kernels from `src/CudaRoute/kernels/xefg_cuda_layers.cu`
+with nvcc and packs them next to the pinned build: `base` (the original code, same compiler), `swizzle`, `ldmatrix`, `opt`
+(both) and `opt-min4` (both, and a register cap on one kernel). When nothing is set, the `opt` variant runs if
+`xefg_cuda_layers.opt.fatbin` is next to the dll (the workflow's package has it) and carries all 16 kernels. A missing or
+unusable file means the pinned build runs instead, which is all the release zip has. Their output is meant to be
+byte-identical to the pinned build's, but nobody has run `tests/xess_cuda` (MFG-Unlocker's byte-for-byte comparison
+against Intel's programs) on them. `XeFGTensorCoresKernels = stock` in the ini (or `DLSSG_TO_XEFG_TENSOR_CORES_KERNELS=stock`)
+goes back to the pinned build, another name picks that variant. To try a fatbin of your own, point
+`DLSSG_TO_XEFG_TENSOR_CORES_FATBIN` at it. Neither is held to the pinned SHA-256 (the log says so), so a set has to keep
+the kernels' names, 128 thread blocks and parameters.
 
 `dlssg_to_xefg_intel_is_better.log` shows what happened. `MfgPort cuda_route {"state":"active"...}` means the kernels
 were created, `MfgPort cuda_layer` lines name the layers recognized, and `Tensor cores are running` appears once kernels
-have launched. `cuda_route ... "state":"unavailable"` or `cuda_list_refused` lines say why the layers stayed on D3D12.
+have launched. `Tensor cores use the ...` names the kernel set that was chosen. `cuda_route ... "state":"unavailable"` or
+`cuda_list_refused` lines say why the layers stayed on D3D12.
 
 ## Which libxess_fg.dll is used
 

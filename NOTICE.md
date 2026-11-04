@@ -11,7 +11,8 @@
 `overlay_native.h` and `overlay_slots.h`. `CudaRoute.cpp` differs from MFG-Unlocker's file by its includes, one renamed
 call and the two functions at its end (`Active`, `AdoptRecordingList`). `src/MfgPort/xefg_mfg_programs/cuda/xefg_cuda_layers.fatbin`
 is MFG-Unlocker's build of `source/native/xess/cuda/xefg_cuda_layers.cu` (the SHA-256 pinned in its
-`generate_cuda_layers.py`), unmodified. `src/CudaKernels.cpp` is this project's glue for it.
+`generate_cuda_layers.py`), unmodified. `src/CudaKernels.cpp` is this project's glue for it. `src/CudaRoute/kernels/xefg_cuda_layers.cu` is that same source with
+three changes that move where operands are read from (see its header), MIT licensed like the original.
 
 MIT License, Copyright (c) 2026 Michael Robles. The full text is in `MFG-Unlocker/LICENSE` in the source tree this port
 was taken from, and is reproduced here:
