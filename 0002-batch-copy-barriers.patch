@@ -1,0 +1,52 @@
+diff --git a/src/Util.h b/src/Util.h
+index 5dd2210..dd1360d 100644
+--- a/src/Util.h
++++ b/src/Util.h
+@@ -75,15 +75,43 @@ inline void Barrier(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* resource
+ 	cmdList->ResourceBarrier(1, &barrier);
+ }
+ 
++// Two transitions in one ResourceBarrier call, which is how drivers want them: a batch is one synchronization point
++inline void BarrierPair(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* first, D3D12_RESOURCE_STATES firstBefore,
++	D3D12_RESOURCE_STATES firstAfter, ID3D12Resource* second, D3D12_RESOURCE_STATES secondBefore,
++	D3D12_RESOURCE_STATES secondAfter)
++{
++	D3D12_RESOURCE_BARRIER barriers[2]{};
++	UINT count = 0;
++
++	auto add = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
++		{
++			if (before == after)
++				return;
++
++			D3D12_RESOURCE_BARRIER& barrier = barriers[count++];
++			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
++			barrier.Transition.pResource = resource;
++			barrier.Transition.StateBefore = before;
++			barrier.Transition.StateAfter = after;
++			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
++		};
++
++	add(first, firstBefore, firstAfter);
++	add(second, secondBefore, secondAfter);
++
++	if (count)
++		cmdList->ResourceBarrier(count, barriers);
++}
++
+ // Both resources are back in their states afterwards
+ inline void Copy(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* destination, D3D12_RESOURCE_STATES destinationState,
+ 	ID3D12Resource* source, D3D12_RESOURCE_STATES sourceState)
+ {
+-	Barrier(cmdList, destination, destinationState, D3D12_RESOURCE_STATE_COPY_DEST);
+-	Barrier(cmdList, source, sourceState, D3D12_RESOURCE_STATE_COPY_SOURCE);
++	BarrierPair(cmdList, destination, destinationState, D3D12_RESOURCE_STATE_COPY_DEST, source, sourceState,
++		D3D12_RESOURCE_STATE_COPY_SOURCE);
+ 	cmdList->CopyResource(destination, source);
+-	Barrier(cmdList, destination, D3D12_RESOURCE_STATE_COPY_DEST, destinationState);
+-	Barrier(cmdList, source, D3D12_RESOURCE_STATE_COPY_SOURCE, sourceState);
++	BarrierPair(cmdList, destination, D3D12_RESOURCE_STATE_COPY_DEST, destinationState, source,
++		D3D12_RESOURCE_STATE_COPY_SOURCE, sourceState);
+ }
+ 
+ // Typed formats for views on typeless or depth resources. 8-bit sRGB maps to UNORM, typed UAVs can't be sRGB

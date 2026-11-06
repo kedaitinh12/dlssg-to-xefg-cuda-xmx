@@ -1,0 +1,525 @@
+diff --git a/README.md b/README.md
+index 42a93f8..8e47654 100644
+--- a/README.md
++++ b/README.md
+@@ -86,6 +86,25 @@ were only verified for 1.3.1 and 1.3.4.
+ 
+ `dlssg_to_xefg_intel_is_better.log` next to the dll says which one was picked.
+ 
++## Diagnostics
++
++Setting the environment variable `DLSSG_TO_XEFG_DIAGNOSTICS=1` before the game starts makes the dll log where time and
++video memory go. Without it the dll does exactly what it did before. With it, the dll records two timestamp queries
++around each of its own regions in the game's command list and asks libxess_fg.dll how much memory it wants:
++
++- `XeFG memory at WxH: ...` each time a context is created: the temp buffer heap, the temp texture heap and the
++  persistent resources of XeFG itself. Only for XeFG 1.3.4. It depends on the output resolution and on the model XeFG
++  uses, and it is a lower bound: XeFG allocates a few more resources that this call does not report.
++- `<purpose>: WxH, format F (N), X MiB` for every texture the dll creates itself, the copies of the game's inputs and
++  the outputs of the generated frames.
++- `GPU time avg/max in ms: ...` about every 480 timed regions. `capture` is the copy of a real frame's inputs (once per
++  real frame), `execute pair` is XeFG for generated frame 1 (the per pair work, which includes the optical flow and the
++  CUDA layers, plus that frame), `execute frame` is XeFG for generated frames 2 and up, `output copy` is the generated
++  frame copied into the game's output.
++
++The timestamps are read back a few real frames after they were recorded, without waiting on a fence. They are for
++comparing two builds or two settings, not for anything exact.
++
+ ## Build
+ 
+ Visual Studio 2026 (v145 toolset), open `dlssg-to-xefg.sln` and build Release x64. The output lands in `bin\Release`.
+diff --git a/dlssg-to-xefg.vcxproj b/dlssg-to-xefg.vcxproj
+index 803c7d7..efcb054 100644
+--- a/dlssg-to-xefg.vcxproj
++++ b/dlssg-to-xefg.vcxproj
+@@ -69,6 +69,7 @@
+     <ClInclude Include="src\CudaRoute\CudaRoute.h" />
+     <ClInclude Include="src\CudaRoute\NvapiOwner.h" />
+     <ClInclude Include="src\FrameGenerator.h" />
++    <ClInclude Include="src\GpuTimer.h" />
+     <ClInclude Include="src\Log.h" />
+     <ClInclude Include="src\MfgKernels.h" />
+     <ClInclude Include="src\MfgPort\MfgPortLog.h" />
+diff --git a/src/FrameGenerator.cpp b/src/FrameGenerator.cpp
+index 0d8e799..c202aa3 100644
+--- a/src/FrameGenerator.cpp
++++ b/src/FrameGenerator.cpp
+@@ -117,6 +117,19 @@ static ComPtr<ID3D12Resource> CreateTexture(ID3D12Device* device, D3D12_RESOURCE
+ 	return texture;
+ }
+ 
++// What one of the shim's textures costs in video memory, to see where the memory goes. Diagnostics only
++static void LogAllocation(ID3D12Device* device, ID3D12Resource* resource, const char* purpose)
++{
++	if (!GpuTimer::DiagnosticsEnabled())
++		return;
++
++	const auto desc = resource->GetDesc();
++	const auto info = device->GetResourceAllocationInfo(0, 1, &desc);
++
++	Log::Info("{}: {}x{}, format {} ({}), {:.1f} MiB", purpose, desc.Width, desc.Height, FormatName(desc.Format),
++		(uint32_t)desc.Format, (double)info.SizeInBytes / (1024.0 * 1024.0));
++}
++
+ // Depth copies become plain color textures where the format allows, anything can read those through SRVs
+ static void MakeReadableDepth(D3D12_RESOURCE_DESC& desc)
+ {
+@@ -172,8 +185,13 @@ static bool Capture(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID
+ 	}
+ 
+ 	if (!copy)
++	{
+ 		copy = CreateTexture(device, desc, XeFGInputState, L"dlssg-to-xefg input copy", purpose);
+ 
++		if (copy)
++			LogAllocation(device, copy.Get(), purpose);
++	}
++
+ 	if (!copy)
+ 		return false;
+ 
+@@ -378,6 +396,25 @@ bool FrameGenerator::CreateContext()
+ 	Log::Info("Creating XeFG context: {}x{}, format: {}, flags: {:X}, ui mode: {}, model: {}", settings.width, settings.height,
+ 		(uint32_t)settings.format, settings.initFlags, settings.uiMode, mfgModel ? MfgKernels::MfgModel : MfgKernels::Dp4aModel);
+ 
++	// Where the video memory of XeFG itself goes. It only depends on the output resolution, and has to be asked before Init
++	if (GpuTimer::DiagnosticsEnabled())
++	{
++		xefgd_properties_t properties{};
++
++		if (XeFG::GetProperties(newContext->handle, initParams.outputResolution, MaxFrames, properties) == XEFGD_RESULT_SUCCESS)
++		{
++			constexpr double MiB = 1024.0 * 1024.0;
++			Log::Info("XeFG memory at {}x{}: temp buffers {:.1f} MiB, temp textures {:.1f} MiB, persistent {:.1f} MiB, {} descriptors",
++				settings.width, settings.height, (double)properties.tempBufferHeapSize / MiB,
++				(double)properties.tempTextureHeapSize / MiB, (double)properties.persistentSize / MiB,
++				properties.requiredDescriptorCount);
++		}
++		else
++		{
++			Log::Info("XeFG memory sizes are not available for this libxess_fg.dll build");
++		}
++	}
++
+ 	if (auto result = XeFG::Init(newContext->handle, initParams); result != XEFGD_RESULT_SUCCESS)
+ 	{
+ 		Log::Error("XeFG Init error: {}", result);
+@@ -453,10 +490,16 @@ void FrameGenerator::CaptureRealFrame(ID3D12GraphicsCommandList* cmdList, const
+ 	auto& frame = context->frames[context->current];
+ 	auto& previous = context->frames[context->current ^ 1];
+ 
+-	bool captured = Capture(device.Get(), cmdList, backbuffer, BackbufferState, frame.backbuffer, "Backbuffer");
+-	captured &= Capture(device.Get(), cmdList, depth, InputState, frame.depth, "Depth copy", true);
+-	captured &= Capture(device.Get(), cmdList, mvecs, InputState, frame.mvecs, "MVecs copy");
+-	Capture(device.Get(), cmdList, hudless, InputState, frame.hudless, "HUDLess copy");
++	bool captured = false;
++
++	{
++		GpuTimer::Scope timing(context->timer, cmdList, GpuTimer::Capture);
++
++		captured = Capture(device.Get(), cmdList, backbuffer, BackbufferState, frame.backbuffer, "Backbuffer");
++		captured &= Capture(device.Get(), cmdList, depth, InputState, frame.depth, "Depth copy", true);
++		captured &= Capture(device.Get(), cmdList, mvecs, InputState, frame.mvecs, "MVecs copy");
++		Capture(device.Get(), cmdList, hudless, InputState, frame.hudless, "HUDLess copy");
++	}
+ 
+ 	auto& data = frame.data;
+ 	data = {};
+@@ -512,9 +555,14 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
+ 	for (uint32_t i = 0; i < frameCount; i++)
+ 	{
+ 		if (!context->outputs[i])
++		{
+ 			context->outputs[i] = CreateTexture(device.Get(), outputDesc, OutputState, L"dlssg-to-xefg output",
+ 				"XeFG output");
+ 
++			if (context->outputs[i])
++				LogAllocation(device.Get(), context->outputs[i].Get(), "XeFG output");
++		}
++
+ 		if (!context->outputs[i])
+ 			return InterpolateResult::Failed;
+ 	}
+@@ -546,7 +594,14 @@ FrameGenerator::InterpolateResult FrameGenerator::Interpolate(ID3D12GraphicsComm
+ 	// XeFG records its Dispatches into the game's own list, hooked here so the layers can become CUDA launches
+ 	CudaKernels::Adopt(cmdList);
+ 
+-	auto result = XeFG::Execute(context->handle, cmdList, params);
++	xefgd_result_t result;
++
++	{
++		GpuTimer::Scope timing(context->timer, cmdList,
++			frameIndex == 1 ? GpuTimer::ExecutePair : GpuTimer::ExecuteFrame);
++
++		result = XeFG::Execute(context->handle, cmdList, params);
++	}
+ 
+ 	if (result == XEFGD_RESULT_SUCCESS)
+ 	{
+@@ -607,9 +662,15 @@ NGXResult FrameGenerator::Evaluate(ID3D12GraphicsCommandList* cmdList, const NGX
+ 
+ 	// Without a usable pair (first frame, reset) the real frame is shown again, that's not an error
+ 	if (result == InterpolateResult::Interpolated)
++	{
++		GpuTimer::Scope timing(context->timer, cmdList, GpuTimer::OutputCopy);
++
+ 		Copy(cmdList, output, OutputState, context->outputs[frameIndex - 1].Get(), OutputState);
++	}
+ 	else
++	{
+ 		Copy(cmdList, output, OutputState, backbuffer, BackbufferState);
++	}
+ 
+ 	return result == InterpolateResult::Failed ? NGX_FAIL : NGX_SUCCESS;
+ }
+diff --git a/src/FrameGenerator.h b/src/FrameGenerator.h
+index 9e26ace..3d42105 100644
+--- a/src/FrameGenerator.h
++++ b/src/FrameGenerator.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include "GpuTimer.h"
+ #include "NGX.h"
+ #include "XeFG.h"
+ 
+@@ -58,6 +59,9 @@ private:
+ 		// The previous and the current real frame can be interpolated
+ 		bool pairValid = false;
+ 
++		// Only does anything with DLSSG_TO_XEFG_DIAGNOSTICS=1
++		GpuTimer timer;
++
+ 		~Context();
+ 	};
+ 
+diff --git a/src/GpuTimer.h b/src/GpuTimer.h
+new file mode 100644
+index 0000000..9cd6ae5
+--- /dev/null
++++ b/src/GpuTimer.h
+@@ -0,0 +1,225 @@
++#pragma once
++
++#include "Log.h"
++
++#include <Windows.h>
++#include <d3d12.h>
++#include <wrl/client.h>
++
++#include <algorithm>
++#include <cstdint>
++#include <format>
++#include <string>
++
++// Diagnostics for finding out what is worth optimizing. Everything here is off unless the environment variable
++// DLSSG_TO_XEFG_DIAGNOSTICS is 1, so the default path records exactly the same commands as before.
++//
++// GpuTimer measures the regions this shim records into the game's own command list. The timestamps are resolved into a
++// readback buffer inside that list and read many intervals later without waiting on a fence, so the numbers only go
++// to the log and nothing else depends on them.
++class GpuTimer
++{
++public:
++	static bool DiagnosticsEnabled()
++	{
++		static const bool enabled = []
++			{
++				char value[8]{};
++				return GetEnvironmentVariableA("DLSSG_TO_XEFG_DIAGNOSTICS", value, sizeof(value)) == 1 && value[0] == '1';
++			}();
++
++		return enabled;
++	}
++
++	enum Region : uint32_t
++	{
++		Capture,      // copies of the real frame's inputs, once per real frame
++		ExecutePair,  // XeFG Execute of generated frame 1: the per pair work plus that frame
++		ExecuteFrame, // XeFG Execute of generated frames 2 and up
++		OutputCopy,   // the generated frame copied into the game's output
++		RegionCount,
++	};
++
++	// Brackets one region of a command list, does nothing while diagnostics are off
++	class Scope
++	{
++	public:
++		Scope(GpuTimer& timer, ID3D12GraphicsCommandList* cmdList, Region region)
++			: timer(timer), cmdList(cmdList), index(timer.Begin(cmdList, region))
++		{
++		}
++
++		~Scope()
++		{
++			if (index >= 0)
++				timer.End(cmdList, index);
++		}
++
++		Scope(const Scope&) = delete;
++		Scope& operator=(const Scope&) = delete;
++
++	private:
++		GpuTimer& timer;
++		ID3D12GraphicsCommandList* cmdList;
++		int64_t index;
++	};
++
++private:
++	// A ring of begin/end timestamp pairs. 256 of them cover several real frames in flight even at 6x
++	static constexpr uint32_t Intervals = 256;
++	// The reader stays this far behind the writer. The GPU has to be closer than that to the CPU for the numbers to hold
++	static constexpr uint32_t ReadBehind = 128;
++	static constexpr uint32_t ReportEvery = 480;
++
++	struct Stat
++	{
++		uint64_t count = 0;
++		double sum = 0.0;
++		double max = 0.0;
++	};
++
++	int64_t Begin(ID3D12GraphicsCommandList* cmdList, Region region)
++	{
++		if (!DiagnosticsEnabled() || (tried && !heap))
++			return -1;
++
++		if (!tried)
++		{
++			tried = true;
++
++			if (!Create(cmdList))
++			{
++				heap.Reset();
++				readback.Reset();
++				Log::Warn("GPU timing is unavailable, creating the timestamp query resources failed");
++				return -1;
++			}
++		}
++
++		const int64_t index = (int64_t)written++;
++		const uint32_t slot = (uint32_t)(index % Intervals);
++		regions[slot] = region;
++		cmdList->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
++		return index;
++	}
++
++	void End(ID3D12GraphicsCommandList* cmdList, int64_t index)
++	{
++		const uint32_t slot = (uint32_t)(index % Intervals);
++		cmdList->EndQuery(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1);
++		cmdList->ResolveQueryData(heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2, 2, readback.Get(),
++			slot * 2 * sizeof(uint64_t));
++
++		Collect();
++	}
++
++	bool Create(ID3D12GraphicsCommandList* cmdList)
++	{
++		Microsoft::WRL::ComPtr<ID3D12Device> device;
++
++		if (FAILED(cmdList->GetDevice(IID_PPV_ARGS(&device))))
++			return false;
++
++		D3D12_QUERY_HEAP_DESC queryHeap{};
++		queryHeap.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
++		queryHeap.Count = Intervals * 2;
++
++		if (FAILED(device->CreateQueryHeap(&queryHeap, IID_PPV_ARGS(&heap))))
++			return false;
++
++		D3D12_HEAP_PROPERTIES props{ D3D12_HEAP_TYPE_READBACK };
++		D3D12_RESOURCE_DESC desc{};
++		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
++		desc.Width = Intervals * 2 * sizeof(uint64_t);
++		desc.Height = 1;
++		desc.DepthOrArraySize = 1;
++		desc.MipLevels = 1;
++		desc.SampleDesc.Count = 1;
++		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
++
++		// A readback buffer starts in COPY_DEST and stays there, which is what ResolveQueryData wants
++		if (FAILED(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST,
++			nullptr, IID_PPV_ARGS(&readback))))
++		{
++			return false;
++		}
++
++		// Any direct queue of the device ticks at the same rate, the game's own queue isn't known here
++		D3D12_COMMAND_QUEUE_DESC queueDesc{};
++		queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
++		Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
++
++		return SUCCEEDED(device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue))) &&
++			SUCCEEDED(queue->GetTimestampFrequency(&frequency)) && frequency != 0;
++	}
++
++	// Reads the intervals the GPU should have finished long ago
++	void Collect()
++	{
++		while (read + ReadBehind < written)
++		{
++			const uint32_t slot = (uint32_t)(read % Intervals);
++			read++;
++
++			const D3D12_RANGE range{ slot * 2 * sizeof(uint64_t), (slot + 1) * 2 * sizeof(uint64_t) };
++			uint64_t* data = nullptr;
++
++			if (FAILED(readback->Map(0, &range, reinterpret_cast<void**>(&data))) || !data)
++				continue;
++
++			const uint64_t begin = data[slot * 2];
++			const uint64_t end = data[slot * 2 + 1];
++
++			const D3D12_RANGE nothingWritten{};
++			readback->Unmap(0, &nothingWritten);
++
++			// Zero is a slot the GPU hasn't written yet
++			if (begin != 0 && end > begin)
++			{
++				const double ms = (double)(end - begin) * 1000.0 / (double)frequency;
++
++				if (ms < 1000.0)
++				{
++					Stat& stat = stats[regions[slot]];
++					stat.count++;
++					stat.sum += ms;
++					stat.max = std::max(stat.max, ms);
++				}
++			}
++
++			if (++sinceReport >= ReportEvery)
++				Report();
++		}
++	}
++
++	void Report()
++	{
++		static constexpr const char* Names[RegionCount] = { "capture", "execute pair", "execute frame", "output copy" };
++
++		std::string line;
++
++		for (uint32_t i = 0; i < RegionCount; i++)
++		{
++			Stat& stat = stats[i];
++
++			if (stat.count)
++				line += std::format(" {} {:.3f}/{:.3f} (n={});", Names[i], stat.sum / (double)stat.count, stat.max, stat.count);
++
++			stat = Stat{};
++		}
++
++		sinceReport = 0;
++		Log::Info("GPU time avg/max in ms:{}", line);
++	}
++
++	Microsoft::WRL::ComPtr<ID3D12QueryHeap> heap;
++	Microsoft::WRL::ComPtr<ID3D12Resource> readback;
++	uint64_t frequency = 0;
++	bool tried = false;
++
++	uint64_t written = 0; // intervals begun
++	uint64_t read = 0;    // intervals consumed
++	uint32_t sinceReport = 0;
++	Region regions[Intervals]{};
++	Stat stats[RegionCount]{};
++};
+diff --git a/src/XeFG.cpp b/src/XeFG.cpp
+index 06da5df..8c755ba 100644
+--- a/src/XeFG.cpp
++++ b/src/XeFG.cpp
+@@ -10,6 +10,7 @@ namespace
+ {
+ 	using PfnCreateContext = xefgd_result_t(*)(ID3D12Device*, xefgd_handle_t*);
+ 	using PfnInit = xefgd_result_t(*)(xefgd_handle_t, const xefgd_init_params_t*);
++	using PfnGetProperties = xefgd_result_t(*)(xefgd_handle_t, const xefgd_2d_t*, uint32_t, xefgd_properties_t*);
+ 	using PfnExecute = xefgd_result_t(*)(xefgd_handle_t, ID3D12GraphicsCommandList*, const xefgd_exec_params_t*);
+ 	using PfnDestroy = xefgd_result_t(*)(xefgd_handle_t);
+ 	using PfnSetLoggingCallback = xefgd_result_t(*)(xefgd_handle_t, uint32_t, xefgd_log_callback_t, void*);
+@@ -21,6 +22,7 @@ namespace
+ 	{
+ 		PfnCreateContext createContext = nullptr;
+ 		PfnInit init = nullptr;
++		PfnGetProperties getProperties = nullptr;
+ 		PfnExecute execute = nullptr;
+ 		PfnDestroy destroy = nullptr;
+ 		PfnSetLoggingCallback setLoggingCallback = nullptr;
+@@ -57,14 +59,15 @@ namespace
+ 		uint32_t timeDateStamp;
+ 		uint32_t sizeOfImage;
+ 		uint32_t createContext, init, execute, destroy, setLoggingCallback, settingsInstance;
++		uint32_t getProperties; // 0 when not located
+ 		const SettingsLayout* layout;
+ 	};
+ 
+ 	const KnownBuild knownBuilds[] = {
+ 		// libxess_fg.dll 1.3.1 from XeSS SDK 3.0.2
+-		{ 0x69CB0F4D, 0x015ED000, 0x1853B0, 0x1871C0, 0x185800, 0x1874C0, 0x188060, 0x1A4610, &Layout_1_3_1 },
++		{ 0x69CB0F4D, 0x015ED000, 0x1853B0, 0x1871C0, 0x185800, 0x1874C0, 0x188060, 0x1A4610, 0, &Layout_1_3_1 },
+ 		// libxess_fg.dll 1.3.4
+-		{ 0x6A95ED0F, 0x015D7000, 0x1856A0, 0x1874B0, 0x185AF0, 0x1877B0, 0x188350, 0x1A4EA0, &Layout_1_3_4 },
++		{ 0x6A95ED0F, 0x015D7000, 0x1856A0, 0x1874B0, 0x185AF0, 0x1877B0, 0x188350, 0x1A4EA0, 0x187AF0, &Layout_1_3_4 },
+ 	};
+ 
+ 	// Builds other than the known ones are scanned for, only accepted when the struct layouts are likely unchanged
+@@ -329,6 +332,7 @@ bool XeFG::Resolve(HMODULE module)
+ 		api.destroy = As<PfnDestroy>(image.base + known->destroy);
+ 		api.setLoggingCallback = As<PfnSetLoggingCallback>(image.base + known->setLoggingCallback);
+ 		api.settingsInstance = As<PfnSettingsInstance>(image.base + known->settingsInstance);
++		api.getProperties = known->getProperties ? As<PfnGetProperties>(image.base + known->getProperties) : nullptr;
+ 		api.layout = known->layout;
+ 	}
+ 	else
+@@ -401,6 +405,15 @@ void XeFG::SetLoggingCallback(xefgd_handle_t context, xefgd_logging_level_t leve
+ 		api.setLoggingCallback(context, level, callback, nullptr);
+ }
+ 
++xefgd_result_t XeFG::GetProperties(xefgd_handle_t context, const xefgd_2d_t& outputResolution,
++	uint32_t maxInterpolatedFrames, xefgd_properties_t& properties)
++{
++	if (!api.getProperties)
++		return XEFGD_RESULT_ERROR_NOT_IMPLEMENTED;
++
++	return api.getProperties(context, &outputResolution, maxInterpolatedFrames, &properties);
++}
++
+ xefgd_result_t XeFG::Init(xefgd_handle_t context, const xefgd_init_params_t& params)
+ {
+ 	return api.init(context, &params);
+diff --git a/src/XeFG.h b/src/XeFG.h
+index 1c63d9e..d07104b 100644
+--- a/src/XeFG.h
++++ b/src/XeFG.h
+@@ -118,6 +118,22 @@ struct xefgd_exec_params_t
+ 
+ #pragma pack(pop)
+ 
++// What XeFG needs for an output resolution, read back by xefgD3D12GetProperties. Reverse engineered from 1.3.4, the
++// two heap sizes are the ones xefgd_init_params_t takes external heaps for
++struct xefgd_properties_t
++{
++	uint32_t requiredDescriptorCount;
++	uint32_t reserved0;
++	uint64_t tempBufferHeapSize;
++	uint64_t tempTextureHeapSize;
++	uint64_t persistentSize; // weights and other resources that live as long as the context
++	uint32_t flags;
++	uint32_t reserved1;
++};
++
++static_assert(sizeof(xefgd_properties_t) == 40);
++static_assert(offsetof(xefgd_properties_t, persistentSize) == 24);
++
+ static_assert(sizeof(xefgd_init_params_t) == 80);
+ static_assert(offsetof(xefgd_init_params_t, pTempBufferHeap) == 32);
+ static_assert(offsetof(xefgd_init_params_t, uiMode) == 72);
+@@ -154,6 +170,9 @@ namespace XeFG
+ 
+ 	xefgd_result_t CreateContext(ID3D12Device* device, xefgd_handle_t* context);
+ 	void SetLoggingCallback(xefgd_handle_t context, xefgd_logging_level_t level, xefgd_log_callback_t callback);
++	// Only known builds have it, anything else gets XEFGD_RESULT_ERROR_NOT_IMPLEMENTED. Call it before Init
++	xefgd_result_t GetProperties(xefgd_handle_t context, const xefgd_2d_t& outputResolution,
++		uint32_t maxInterpolatedFrames, xefgd_properties_t& properties);
+ 	xefgd_result_t Init(xefgd_handle_t context, const xefgd_init_params_t& params);
+ 	// Leaves XeFG's descriptor heap bound
+ 	xefgd_result_t Execute(xefgd_handle_t context, ID3D12GraphicsCommandList* cmdList, const xefgd_exec_params_t& params);
