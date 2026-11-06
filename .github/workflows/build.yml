@@ -34,7 +34,17 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-
+      
+      - name: Apply patches
+        shell: bash
+        run: |
+          shopt -s nullglob
+          for p in 0*.patch; do
+            echo "Applying $p"
+            # checkout có thể đổi file patch sang CRLF, bỏ CR trước khi áp
+            tr -d '\r' < "$p" | git apply --ignore-whitespace -
+          done
+          
       - name: Python
         run: |
           rm -f /etc/apt/sources.list.d/cuda* /etc/apt/sources.list.d/nvidia*
